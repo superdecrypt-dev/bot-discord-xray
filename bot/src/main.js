@@ -865,7 +865,7 @@ client.on("interactionCreate", async (interaction) => {
     return interaction.reply({ ...panel, ephemeral: true });
   }
 
-  if (cmd === "welcome" || cmd === "wellcome") {
+  if (cmd === "welcome") {
     const panel = buildWelcomePanel();
     return interaction.reply({ ...panel, ephemeral: true });
   }

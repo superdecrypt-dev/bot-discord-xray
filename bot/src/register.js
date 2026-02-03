@@ -65,11 +65,6 @@ async function registerCommands() {
       .setName("welcome")
       .setDescription("Panel welcome message (admin only)"),
 
-    // Alias typo (optional)
-    new SlashCommandBuilder()
-      .setName("wellcome")
-      .setDescription("Alias /welcome (admin only)"),
-
     new SlashCommandBuilder()
       .setName("audit")
       .setDescription("Panel audit log bot (admin only)"),
