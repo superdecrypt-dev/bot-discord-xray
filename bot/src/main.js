@@ -193,7 +193,11 @@ client.on("interactionCreate", async (interaction) => {
       const protocol = cid.split(":")[1] || "";
       const username = String(interaction.fields.getTextInputValue("username") || "").trim();
       const days = String(interaction.fields.getTextInputValue("days") || "").trim();
-      const quota = String(interaction.fields.getTextInputValue("quota") || "").trim();
+      const quota = String((() => {
+        try { return interaction.fields.getTextInputValue("quota_gb"); } catch (_) { return null; }
+      })() || (() => {
+        try { return interaction.fields.getTextInputValue("quota"); } catch (_) { return null; }
+      })() || "").trim();
 
       const v = lightValidate(protocol, username, Number(days), Number(quota));
       await interaction.deferReply({ ephemeral: true });
@@ -211,7 +215,9 @@ client.on("interactionCreate", async (interaction) => {
       }
 
       // Attachment: XRAY ACCOUNT DETAIL .txt (from backend)
-      const txtPath = resp && resp.detail_txt ? String(resp.detail_txt) : null;
+      const txtPath = resp && (resp.detail_path || resp.detail_txt)
+        ? String(resp.detail_path || resp.detail_txt)
+        : null;
       if (!txtPath || !fs.existsSync(txtPath)) {
         return interaction.editReply(`✅ Created: ${resp.username} (UUID/Pass: ${resp.uuid || "-"})\n⚠️ Detail file not found: ${txtPath || "-"}`);
       }
@@ -354,16 +360,12 @@ client.on("interactionCreate", async (interaction) => {
         const parsed = parseFinalEmail(selected);
         if (!parsed) return interaction.reply({ content: "❌ Invalid selection", ephemeral: true });
 
-        // Ask backend to get detail file path again
+        // Use local XRAY ACCOUNT DETAIL (.txt) path (avoid backend get_detail)
         await interaction.deferUpdate();
-        const resp = await callBackend({ action: "get_detail", protocol: parsed.proto, username: parsed.base });
 
-        if (resp.status !== "ok") {
-          return interaction.followUp({ content: `❌ Failed: ${resp.error || "unknown error"}`, ephemeral: true });
-        }
-
-        const txtPath = resp && resp.detail_txt ? String(resp.detail_txt) : null;
-        if (!txtPath || !fs.existsSync(txtPath)) {
+        const baseDir = (parsed.proto === "allproto") ? "/opt/allproto" : `/opt/${parsed.proto}`;
+        const txtPath = path.join(baseDir, `${parsed.final}.txt`);
+        if (!fs.existsSync(txtPath)) {
           return interaction.followUp({ content: `❌ File not found: ${txtPath}`, ephemeral: true });
         }
 

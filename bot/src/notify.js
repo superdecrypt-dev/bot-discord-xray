@@ -120,8 +120,14 @@ function buildNotifyMessageText({ wsMs, ipcMs, xrayState, nginxState, error }) {
   lines.push(`Backend IPC: ${ipcMs} ms`);
   lines.push("");
   lines.push("🧩 Status");
-  lines.push(`Xray : ${badge(xrayState)}`);
-  lines.push(`Nginx: ${badge(nginxState)}`);
+  const xs = (xrayState && typeof xrayState === "object")
+    ? (xrayState.state || (xrayState.active ? "active" : "inactive"))
+    : xrayState;
+  const ns = (nginxState && typeof nginxState === "object")
+    ? (nginxState.state || (nginxState.active ? "active" : "inactive"))
+    : nginxState;
+  lines.push(`Xray : ${badge(xs)}`);
+  lines.push(`Nginx: ${badge(ns)}`);
   lines.push("```");
   return lines.join("\n");
 }

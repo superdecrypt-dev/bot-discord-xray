@@ -11,7 +11,20 @@ const PAGE_SIZE = 25;
 const ADD_PROTOCOLS = ["vless", "vmess", "trojan", "allproto"];
 const LIST_PROTOCOLS = ["all", "vless", "vmess", "trojan", "allproto"];
 
-const HELP_TABS = ["overview", "accounts", "add", "del", "notify", "ping", "status"];
+const HELP_TABS = [
+  "overview",
+  "accounts",
+  "add",
+  "del",
+  "notify",
+  "ping",
+  "status",
+  // Discord server interaction modules
+  "purge",
+  "channel",
+  "welcome",
+  "audit",
+];
 
 const NOTIFY_STATE_PATH = "/opt/xray-discord-bot/state/notify.json";
 const NOTIFY_MIN_INTERVAL_MIN = 1;

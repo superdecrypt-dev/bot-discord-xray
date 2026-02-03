@@ -27,7 +27,14 @@ function buildHelpButtons(activeTab) {
     mk("status", "Status", "🧩"),
   );
 
-  return [row1, row2];
+  const row3 = new ActionRowBuilder().addComponents(
+    mk("purge", "Purge", "🧹"),
+    mk("channel", "Channel", "📌"),
+    mk("welcome", "Welcome", "👋"),
+    mk("audit", "Audit", "🧾"),
+  );
+
+  return [row1, row2, row3];
 }
 
 function buildHelpEmbed(tab) {
@@ -44,7 +51,7 @@ function buildHelpEmbed(tab) {
         "- Backend yang melakukan perubahan Xray & filesystem yang sensitif.",
         "",
         "**Hak akses**",
-        "- Admin only: `/accounts`, `/add`, `/del`, `/notify`, `/status`",
+        "- Admin only: `/accounts`, `/add`, `/del`, `/notify`, `/status`, `/purge`, `/channel`, `/welcome`, `/audit`",
         "- Publik: `/ping`, `/help`",
         "",
         "**Aturan username**",
@@ -153,6 +160,91 @@ function buildHelpEmbed(tab) {
         "- Menampilkan status service `xray` dan `nginx` (hasil dari backend)",
         "",
         "**Output:** text-only (codeblock) agar jelas di dark/light mode.",
+      ].join("\n")
+    );
+    return e;
+  }
+
+  if (tab === "purge") {
+    e.setDescription(
+      [
+        "**/purge (Admin only)**",
+        "",
+        "**Fungsi:**",
+        "- Membersihkan pesan di channel saat ini dengan UI button.",
+        "- Mendukung mode: **BOT_ONLY** (default) atau **ALL** (kecuali pinned).",
+        "",
+        "**Cara pakai:**",
+        "1) Jalankan `/purge`",
+        "2) Pilih jumlah pesan (10/25/50/100)",
+        "3) Toggle mode bila perlu",
+        "4) Klik **Confirm** untuk eksekusi",
+        "",
+        "**Catatan:**",
+        "- Pesan pinned tidak dihapus.",
+        "- Discord tidak bisa bulk delete pesan >14 hari (akan di-skip otomatis).",
+      ].join("\n")
+    );
+    return e;
+  }
+
+  if (tab === "channel") {
+    e.setDescription(
+      [
+        "**/channel (Admin only)**",
+        "",
+        "**Fungsi:**",
+        "- Mengatur channel untuk fitur bot: **notify / audit / welcome**.",
+        "",
+        "**Cara pakai:**",
+        "1) Jalankan `/channel`",
+        "2) Klik `Set Notify` / `Set Audit` / `Set Welcome`",
+        "3) Pilih channel dari dropdown",
+        "",
+        "**Catatan:**",
+        "- Ini hanya mengatur target channel (tidak mengaktifkan fitur).",
+      ].join("\n")
+    );
+    return e;
+  }
+
+  if (tab === "welcome") {
+    e.setDescription(
+      [
+        "**/welcome (Admin only)**",
+        "",
+        "**Fungsi:**",
+        "- Mengirim welcome message saat member join.",
+        "- Bisa set channel dan edit template via modal.",
+        "",
+        "**Cara pakai:**",
+        "1) Jalankan `/welcome`",
+        "2) Klik `Set Channel` lalu pilih channel",
+        "3) Klik `Edit Template` untuk ubah pesan (token: `{user}` `{username}` `{server}`)",
+        "4) Klik `Enable` untuk aktifkan",
+        "5) Klik `Test` untuk kirim contoh",
+      ].join("\n")
+    );
+    return e;
+  }
+
+  if (tab === "audit") {
+    e.setDescription(
+      [
+        "**/audit (Admin only)**",
+        "",
+        "**Fungsi:**",
+        "- Mencatat aktivitas admin pada bot (opsional).",
+        "- Bisa kirim log ke channel audit (text-only).",
+        "",
+        "**Cara pakai:**",
+        "1) Jalankan `/audit`",
+        "2) Klik `Set Channel` lalu pilih channel",
+        "3) Klik `Enable` untuk aktifkan",
+        "4) Klik `Test` untuk kirim 1 event contoh",
+        "",
+        "**Catatan:**",
+        "- Panel menampilkan ringkasan event terbaru (preview).",
       ].join("\n")
     );
     return e;
