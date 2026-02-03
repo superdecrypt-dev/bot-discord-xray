@@ -3,27 +3,28 @@ set -euo pipefail
 trap 'echo "[ERROR] Failed at line $LINENO: $BASH_COMMAND" >&2' ERR
 
 # ============================================================
-# XRAY DISCORD BOT INSTALLER (TAR.GZ from GitHub Releases)
-# - Default asset: bot-discord-xray.tar.gz
-# - Default URL   : https://github.com/superdecrypt-dev/bot-discord-xray/releases/latest/download/bot-discord-xray.tar.gz
-# - No SHA256 verification (by request)
+# XRAY DISCORD BOT INSTALLER (GitHub Release tar.gz)
 #
-# Bundle tar.gz is expected to contain a root folder (recommended) like:
+# Bundle must contain:
 #   bot-discord-xray/
 #     backend/  (backend.py + xray_backend/)
 #     bot/      (bot.js + package.json + src/)
 #
 # Clean Architecture:
-#   - Python backend runs as root (system access + Xray config edits)
-#   - Node.js bot runs as non-root user 'discordbot' (UI only)
+#   - Python backend: root (system access + Xray config edits)
+#   - Node.js bot   : non-root user 'discordbot' (Discord UI only)
 #
-# Uninstall DOES NOT touch:
-#   /opt/quota/*  and  /opt/{vless,vmess,trojan,allproto}/*
+# IMPORTANT:
+# - Env keys follow tar.gz code (bot/src/config.js):
+#     DISCORD_BOT_TOKEN / DISCORD_GUILD_ID / DISCORD_ADMIN_ROLE_ID / DISCORD_CLIENT_ID
+# - Install/Update automatically runs: node src/register.js
+# - Uninstall does NOT delete:
+#     /opt/quota/* and /opt/{vless,vmess,trojan,allproto}/*
 # ============================================================
 
 SCRIPT_NAME="install-xray-bot.sh"
 
-# -------- Default Release Asset URL (repo baru) --------
+# -------- Default Release Asset URL --------
 DEFAULT_TAR_URL="https://github.com/superdecrypt-dev/bot-discord-xray/releases/latest/download/bot-discord-xray.tar.gz"
 
 # -------- Paths --------
@@ -38,15 +39,19 @@ XRAY_CONFIG="/usr/local/etc/xray/config.json"
 XRAY_SERVICE="xray"
 
 BOT_USER="discordbot"
+BOT_HOME="/home/${BOT_USER}"
+
 CLI_BIN="/usr/local/bin/xray-userctl"
 
-BACKEND_SERVICE_FILE="/etc/systemd/system/xray-backend.service"
-BOT_SERVICE_FILE="/etc/systemd/system/xray-discord-bot.service"
+SOCK_PATH="/run/xray-backend.sock"
 
-# -------- Helpers --------
-info(){ echo "[INFO]  $*"; }
-ok(){   echo "[OK]    $*"; }
-warn(){ echo "[WARN]  $*"; }
+BACKEND_UNIT="/etc/systemd/system/xray-backend.service"
+BOT_UNIT="/etc/systemd/system/xray-discord-bot.service"
+
+# -------- Helpers (LOG -> STDERR) --------
+info(){ echo "[INFO]  $*" >&2; }
+ok(){   echo "[OK]    $*" >&2; }
+warn(){ echo "[WARN]  $*" >&2; }
 die(){  echo "[ERROR] $*" >&2; exit 1; }
 
 pause(){
@@ -62,6 +67,7 @@ detect_os(){
   [[ -f /etc/os-release ]] || die "Cannot detect OS: /etc/os-release not found"
   # shellcheck disable=SC1091
   . /etc/os-release
+
   case "${ID:-}" in
     debian)
       case "${VERSION_ID:-}" in
@@ -98,19 +104,11 @@ ensure_xray_present(){
 
 ensure_bot_user(){
   if ! id "${BOT_USER}" >/dev/null 2>&1; then
-    useradd -r -m -d "/home/${BOT_USER}" -s /bin/bash "${BOT_USER}"
+    useradd -r -m -d "${BOT_HOME}" -s /bin/bash "${BOT_USER}"
     ok "Created user: ${BOT_USER}"
   else
     ok "User exists: ${BOT_USER}"
   fi
-
-  # Ensure group exists
-  if ! getent group "${BOT_USER}" >/dev/null 2>&1; then
-    groupadd "${BOT_USER}" || true
-  fi
-
-  usermod -aG "${BOT_USER}" "${BOT_USER}" >/dev/null 2>&1 || true
-  ok "Group ensured: ${BOT_USER}"
 }
 
 ensure_dirs(){
@@ -118,20 +116,23 @@ ensure_dirs(){
   chmod 755 "${BACKEND_DIR}" "${BOT_DIR}"
   chmod 700 "${ENV_DIR}"
 
-  # Required folders for runtime artifacts (DO NOT delete on uninstall)
+  # Runtime folders (MUST exist, but uninstall must NOT delete contents)
   mkdir -p /opt/quota/vless /opt/quota/vmess /opt/quota/trojan /opt/quota/allproto
-  chmod 755 /opt/quota /opt/quota/vless /opt/quota/vmess /opt/quota/trojan /opt/quota/allproto
-  chown -R root:root /opt/quota
-
   mkdir -p /opt/vless /opt/vmess /opt/trojan /opt/allproto
+
+  chmod 755 /opt/quota /opt/quota/vless /opt/quota/vmess /opt/quota/trojan /opt/quota/allproto
   chmod 755 /opt/vless /opt/vmess /opt/trojan /opt/allproto
-  chown -R root:root /opt/vless /opt/vmess /opt/trojan /opt/allproto
+
+  # Bot state (notify.json etc.)
+  mkdir -p "${BOT_DIR}/state"
+  chown -R "${BOT_USER}:${BOT_USER}" "${BOT_DIR}/state"
+  chmod 755 "${BOT_DIR}/state"
 
   ok "Directories ensured"
 }
 
 # -----------------------------
-# Config: TAR_URL
+# TAR_URL config
 # -----------------------------
 load_source(){
   TAR_URL=""
@@ -163,8 +164,8 @@ prompt_source(){
   echo "  ${TAR_URL}"
   echo
   echo "Enter new TAR_URL (press Enter to keep current)."
-  echo "Example (latest):"
-  echo "  https://github.com/superdecrypt-dev/bot-discord-xray/releases/latest/download/bot-discord-xray.tar.gz"
+  echo "Example:"
+  echo "  ${DEFAULT_TAR_URL}"
   echo -n "TAR_URL: "
   read -r NEW_URL || true
   if [[ -n "${NEW_URL}" ]]; then
@@ -174,8 +175,15 @@ prompt_source(){
 }
 
 # -----------------------------
-# Discord credentials
+# Discord credentials (matches tar.gz code)
 # -----------------------------
+env_has_discord_keys(){
+  [[ -f "${ENV_FILE}" ]] || return 1
+  # shellcheck disable=SC1090
+  set -a; . "${ENV_FILE}" >/dev/null 2>&1 || true; set +a
+  [[ -n "${DISCORD_BOT_TOKEN:-}" && -n "${DISCORD_GUILD_ID:-}" && -n "${DISCORD_ADMIN_ROLE_ID:-}" && -n "${DISCORD_CLIENT_ID:-}" ]]
+}
+
 prompt_secrets(){
   mkdir -p "${ENV_DIR}"
   chmod 700 "${ENV_DIR}"
@@ -184,7 +192,7 @@ prompt_secrets(){
   echo "Input Discord credentials (stored in ${ENV_FILE} with chmod 600)"
   echo -n "DISCORD_BOT_TOKEN: "
   read -rs TOKEN; echo
-  [[ -n "${TOKEN}" ]] || die "Token cannot be empty"
+  [[ -n "${TOKEN}" ]] || die "DISCORD_BOT_TOKEN cannot be empty"
 
   echo -n "DISCORD_GUILD_ID (SERVER ID): "
   read -r GUILD
@@ -211,88 +219,25 @@ EOF
 }
 
 # -----------------------------
-# Download + extract bundle
+# NVM + Node install (discordbot user)
 # -----------------------------
-download_bundle_to_tmp(){
-  local url="$1"
-  local out="/tmp/bot-discord-xray.$$.tar.gz"
-  info "Downloading bundle: ${url}"
-  curl -fL --retry 3 --retry-delay 1 -o "${out}" "${url}"
-  ok "Bundle downloaded: ${out}"
-  echo "${out}"
-}
-
-extract_bundle(){
-  local tarfile="$1"
-  local tmpdir="/tmp/bot_discord_xray_extract.$$"
-  mkdir -p "${tmpdir}"
-
-  info "Extracting bundle..."
-  tar -xzf "${tarfile}" -C "${tmpdir}"
-  ok "Extracted to: ${tmpdir}"
-
-  # Detect root folder from tar first entry
-  local root
-  root="$(tar -tzf "${tarfile}" | head -n1 | cut -d/ -f1)"
-  [[ -n "${root}" ]] || die "Cannot detect root dir from tarball"
-  local stage="${tmpdir}/${root}"
-
-  # If tar is flat (backend/, bot/ at top-level), fall back to tmpdir itself
-  if [[ -d "${tmpdir}/backend" && -d "${tmpdir}/bot" ]]; then
-    stage="${tmpdir}"
-    warn "Tar appears flat (backend/ + bot/ at top). Using stage=${stage}"
-  fi
-
-  # Validate expected structure
-  [[ -f "${stage}/backend/backend.py" ]] || die "Invalid bundle: missing backend/backend.py"
-  [[ -d "${stage}/backend/xray_backend" ]] || die "Invalid bundle: missing backend/xray_backend/"
-  [[ -f "${stage}/bot/bot.js" ]] || die "Invalid bundle: missing bot/bot.js"
-  [[ -f "${stage}/bot/package.json" ]] || die "Invalid bundle: missing bot/package.json"
-
-  echo "${stage}"
-}
-
-deploy_from_stage(){
-  local stage="$1"
-
-  info "Deploying backend to ${BACKEND_DIR} ..."
-  mkdir -p "${BACKEND_DIR}"
-  rsync -a --delete \
-    --exclude '__pycache__' --exclude '*.pyc' \
-    "${stage}/backend/" "${BACKEND_DIR}/"
-  chown -R root:root "${BACKEND_DIR}"
-  chmod 755 "${BACKEND_DIR}/backend.py" || true
-  ok "Backend deployed"
-
-  info "Deploying bot to ${BOT_DIR} ..."
-  mkdir -p "${BOT_DIR}"
-  rsync -a --delete \
-    --exclude 'node_modules' \
-    "${stage}/bot/" "${BOT_DIR}/"
-  # Allow bot user to manage node_modules
-  chown -R "${BOT_USER}:${BOT_USER}" "${BOT_DIR}"
-  ok "Bot deployed"
-}
-
-# -----------------------------------------
-# Install NVM + Node 25 as discordbot
-# -----------------------------------------
 install_node_via_nvm(){
   info "Installing NVM + Node.js 25 for user '${BOT_USER}' (idempotent)..."
 
-  local tmp="/tmp/install_nvm_node25_${BOT_USER}.$$.sh"
+  local tmp="/tmp/install_nvm_node25_${BOT_USER}.sh"
   cat > "${tmp}" <<'EOS'
 #!/usr/bin/env bash
 set -euo pipefail
-export NVM_DIR="${HOME}/.nvm"
 
-if [[ ! -d "${NVM_DIR}" ]]; then
+export NVM_DIR="${NVM_DIR:-$HOME/.nvm}"
+
+if [[ ! -d "$NVM_DIR" ]]; then
   curl -fsSL https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.3/install.sh | bash
 fi
 
-# Load nvm explicitly (do NOT rely on .bashrc/.profile)
+# Load nvm explicitly (do NOT rely on .bashrc)
 # shellcheck disable=SC1091
-[[ -s "${NVM_DIR}/nvm.sh" ]] && . "${NVM_DIR}/nvm.sh"
+[[ -s "$NVM_DIR/nvm.sh" ]] && . "$NVM_DIR/nvm.sh"
 
 nvm install 25
 nvm alias default 25
@@ -307,60 +252,131 @@ EOS
   su - "${BOT_USER}" -c "bash '${tmp}'"
   rm -f "${tmp}"
 
-  ok "NVM + Node installed for ${BOT_USER}"
+  NODE_BIN="$(su - "${BOT_USER}" -c "bash -lc 'export NVM_DIR=\"\${NVM_DIR:-\$HOME/.nvm}\"; [ -s \"\$NVM_DIR/nvm.sh\" ] && . \"\$NVM_DIR/nvm.sh\"; command -v node'")"
+  NPM_BIN="$(su - "${BOT_USER}" -c "bash -lc 'export NVM_DIR=\"\${NVM_DIR:-\$HOME/.nvm}\"; [ -s \"\$NVM_DIR/nvm.sh\" ] && . \"\$NVM_DIR/nvm.sh\"; command -v npm'")"
+
+  [[ -n "${NODE_BIN}" && -x "${NODE_BIN}" ]] || die "Failed to locate node after nvm install"
+  [[ -n "${NPM_BIN}" && -x "${NPM_BIN}" ]] || die "Failed to locate npm after nvm install"
+
+  ok "Node installed: ${NODE_BIN}"
+  ok "NPM installed : ${NPM_BIN}"
 }
 
-node_bin_for_bot(){
-  su - "${BOT_USER}" -c "bash -lc 'export NVM_DIR=\"\$HOME/.nvm\"; [ -s \"\$NVM_DIR/nvm.sh\" ] && . \"\$NVM_DIR/nvm.sh\"; command -v node'"
+# -----------------------------
+# Download + extract bundle
+# -----------------------------
+download_bundle_to_tmp(){
+  local url="$1"
+  local out
+  out="$(mktemp -p /tmp bot-discord-xray.XXXXXX.tar.gz)"
+  info "Downloading bundle: ${url}"
+  curl -fL --retry 3 --retry-delay 1 -o "${out}" "${url}"
+  ok "Bundle downloaded: ${out}"
+  echo "${out}"
 }
 
-npm_bin_for_bot(){
-  su - "${BOT_USER}" -c "bash -lc 'export NVM_DIR=\"\$HOME/.nvm\"; [ -s \"\$NVM_DIR/nvm.sh\" ] && . \"\$NVM_DIR/nvm.sh\"; command -v npm'"
+detect_tar_root(){
+  local tarfile="$1"
+  local first
+  first="$(tar -tzf "${tarfile}" | sed 's|^\./||' | awk -F/ 'NF>1 && $1!=""{print $1; exit}')"
+  [[ -n "${first}" ]] || return 1
+  [[ "${first}" != "." ]] || return 1
+  echo "${first}"
 }
 
-install_bot_deps(){
-  info "Installing Node dependencies in ${BOT_DIR} (as ${BOT_USER})..."
+extract_bundle(){
+  local tarfile="$1"
+  local tmpdir
+  tmpdir="$(mktemp -d -p /tmp bot_discord_xray_extract.XXXXXX)"
+
+  info "Extracting bundle..."
+  tar -xzf "${tarfile}" -C "${tmpdir}"
+  ok "Extracted to: ${tmpdir}"
+
+  local root
+  root="$(detect_tar_root "${tarfile}")" || die "Cannot detect root dir from tarball"
+  local stage="${tmpdir}/${root}"
+
+  [[ -d "${stage}/backend" ]] || die "Tarball missing: ${root}/backend"
+  [[ -d "${stage}/bot" ]] || die "Tarball missing: ${root}/bot"
+
+  echo "${stage}"
+}
+
+deploy_bundle(){
+  local stage="$1"
+
+  info "Deploying backend -> ${BACKEND_DIR}"
+  rsync -a --delete "${stage}/backend/" "${BACKEND_DIR}/"
+  chmod 755 "${BACKEND_DIR}"
+  chown -R root:root "${BACKEND_DIR}"
+  chmod +x "${BACKEND_DIR}/backend.py" || true
+
+  info "Deploying bot -> ${BOT_DIR}"
+  rsync -a --delete "${stage}/bot/" "${BOT_DIR}/"
+  chmod 755 "${BOT_DIR}"
+  chown -R root:root "${BOT_DIR}"
+  # Node modules should be owned by BOT_USER after npm install; for now set base ownership for source:
+  chown -R "${BOT_USER}:${BOT_USER}" "${BOT_DIR}" || true
+  chmod +x "${BOT_DIR}/bot.js" || true
+
+  ok "Deploy complete"
+}
+
+# -----------------------------
+# Bot deps install
+# -----------------------------
+npm_install_bot(){
+  info "Installing bot dependencies (npm install) as ${BOT_USER}..."
   su - "${BOT_USER}" -c "bash -lc '
-    export NVM_DIR=\"\$HOME/.nvm\"
+    export NVM_DIR=\"\${NVM_DIR:-\$HOME/.nvm}\"
     [ -s \"\$NVM_DIR/nvm.sh\" ] && . \"\$NVM_DIR/nvm.sh\"
-    command -v npm >/dev/null 2>&1 || { echo \"[ERROR] npm not found in bot user env\"; exit 1; }
     cd \"${BOT_DIR}\"
     npm install --omit=dev
   '"
-  ok "Node dependencies installed"
+  ok "Bot dependencies installed"
 }
 
+# -----------------------------
+# CLI link
+# -----------------------------
+install_cli_link(){
+  info "Installing CLI: ${CLI_BIN}"
+  ln -sf "${BACKEND_DIR}/backend.py" "${CLI_BIN}"
+  chmod +x "${CLI_BIN}" || true
+  chown root:root "${CLI_BIN}"
+  ok "CLI ready: ${CLI_BIN}"
+}
+
+# -----------------------------
+# Systemd units
+# -----------------------------
 write_systemd_units(){
   info "Writing systemd units..."
 
-  # Backend (root)
-  cat > "${BACKEND_SERVICE_FILE}" <<EOF
+  cat > "${BACKEND_UNIT}" <<EOF
 [Unit]
-Description=Xray Backend (Python, root) - IPC via UNIX socket
-After=network.target
-Wants=network.target
+Description=Xray Backend (Python IPC Service)
+After=network.target ${XRAY_SERVICE}.service
+Wants=${XRAY_SERVICE}.service
 
 [Service]
 Type=simple
 User=root
 Group=root
-WorkingDirectory=${BACKEND_DIR}
+ExecStartPre=/bin/rm -f ${SOCK_PATH}
 ExecStart=/usr/bin/python3 ${BACKEND_DIR}/backend.py --serve
 Restart=on-failure
 RestartSec=2
+KillSignal=SIGINT
 
 [Install]
 WantedBy=multi-user.target
 EOF
 
-  # Bot (non-root)
-  local node_bin
-  node_bin="$(node_bin_for_bot)"
-  [[ -n "${node_bin}" && -x "${node_bin}" ]] || die "Node binary not found for ${BOT_USER}. Install node first."
-
-  cat > "${BOT_SERVICE_FILE}" <<EOF
+  cat > "${BOT_UNIT}" <<EOF
 [Unit]
-Description=Xray Discord Bot (Node.js, non-root) - UI only
+Description=Xray Discord Bot (Node.js)
 After=network.target xray-backend.service
 Requires=xray-backend.service
 
@@ -368,9 +384,10 @@ Requires=xray-backend.service
 Type=simple
 User=${BOT_USER}
 Group=${BOT_USER}
-EnvironmentFile=${ENV_FILE}
 WorkingDirectory=${BOT_DIR}
-ExecStart=${node_bin} ${BOT_DIR}/bot.js
+EnvironmentFile=${ENV_FILE}
+NoNewPrivileges=true
+ExecStart=/bin/bash -lc 'export NVM_DIR="${BOT_HOME}/.nvm"; [ -s "\$NVM_DIR/nvm.sh" ] && . "\$NVM_DIR/nvm.sh"; cd "${BOT_DIR}"; exec node bot.js'
 Restart=on-failure
 RestartSec=2
 
@@ -378,55 +395,70 @@ RestartSec=2
 WantedBy=multi-user.target
 EOF
 
+  chmod 644 "${BACKEND_UNIT}" "${BOT_UNIT}"
   systemctl daemon-reload
-  ok "systemd units installed"
+  ok "Systemd units written"
 }
 
-restart_services(){
-  require_root
-  info "Restarting services..."
+enable_start_services(){
+  info "Enabling + starting services..."
   systemctl enable --now xray-backend.service
   systemctl enable --now xray-discord-bot.service
-  systemctl restart xray-backend.service || true
-  systemctl restart xray-discord-bot.service || true
-  ok "Services restarted"
+  ok "Services enabled + started"
 }
 
-post_install_checks(){
-  info "Post-install checks..."
+# -----------------------------
+# Register slash commands (auto after update)
+# -----------------------------
+register_commands(){
+  info "Registering Discord slash commands (node src/register.js)..."
 
-  "${CLI_BIN}" --help >/dev/null 2>&1 || die "xray-userctl --help failed"
+  [[ -f "${ENV_FILE}" ]] || die "Env missing: ${ENV_FILE}. Run Reconfigure first."
+  # shellcheck disable=SC1090
+  set -a; . "${ENV_FILE}"; set +a
 
-  python3 - <<PY
-import json
-p="${XRAY_CONFIG}"
-with open(p,"r",encoding="utf-8") as f:
-  json.load(f)
-print("OK: JSON valid:", p)
-PY
+  [[ -n "${DISCORD_BOT_TOKEN:-}" ]] || die "DISCORD_BOT_TOKEN is empty in ${ENV_FILE}"
+  [[ -n "${DISCORD_GUILD_ID:-}" ]] || die "DISCORD_GUILD_ID is empty in ${ENV_FILE}"
+  [[ -n "${DISCORD_ADMIN_ROLE_ID:-}" ]] || die "DISCORD_ADMIN_ROLE_ID is empty in ${ENV_FILE}"
+  [[ -n "${DISCORD_CLIENT_ID:-}" ]] || die "DISCORD_CLIENT_ID is empty in ${ENV_FILE}"
 
-  systemctl is-active xray-backend.service >/dev/null || warn "xray-backend not active"
-  systemctl is-active xray-discord-bot.service >/dev/null || warn "xray-discord-bot not active"
+  su - "${BOT_USER}" -c "bash -lc '
+    export NVM_DIR=\"\${NVM_DIR:-\$HOME/.nvm}\"
+    [ -s \"\$NVM_DIR/nvm.sh\" ] && . \"\$NVM_DIR/nvm.sh\"
+    cd \"${BOT_DIR}\"
+    DISCORD_BOT_TOKEN=\"${DISCORD_BOT_TOKEN}\" \
+    DISCORD_GUILD_ID=\"${DISCORD_GUILD_ID}\" \
+    DISCORD_ADMIN_ROLE_ID=\"${DISCORD_ADMIN_ROLE_ID}\" \
+    DISCORD_CLIENT_ID=\"${DISCORD_CLIENT_ID}\" \
+    node src/register.js
+  '"
 
-  ok "Post-install checks done"
+  ok "Register commands OK"
+}
 
+# -----------------------------
+# Reconfigure menu
+# -----------------------------
+reconfigure(){
+  require_root
   echo
-  echo "================ INSTALL SUMMARY ================"
-  echo "TAR_URL     : ${TAR_URL}"
-  echo "Backend dir : ${BACKEND_DIR}"
-  echo "Bot dir     : ${BOT_DIR}"
-  echo "Env file    : ${ENV_FILE}"
-  echo "Source conf : ${SOURCE_FILE}"
-  echo "CLI         : ${CLI_BIN}"
-  echo "Python      : $(python3 -V 2>/dev/null || true)"
-  echo "Node        : $(node_bin_for_bot 2>/dev/null || true)"
-  echo "NPM         : $(npm_bin_for_bot 2>/dev/null || true)"
-  echo "Xray svc    : $(systemctl is-active ${XRAY_SERVICE} 2>/dev/null || true)"
-  echo "Backend svc : $(systemctl is-active xray-backend.service 2>/dev/null || true)"
-  echo "Bot svc     : $(systemctl is-active xray-discord-bot.service 2>/dev/null || true)"
-  echo "================================================="
+  echo "Reconfigure:"
+  echo "1) Discord credentials (TOKEN/GUILD/ROLE/CLIENT)"
+  echo "2) TAR_URL source (release URL)"
+  echo "0) Back"
+  echo -n "Choose [0-2]: "
+  read -r c || true
+  case "${c:-}" in
+    1) prompt_secrets ;;
+    2) prompt_source ;;
+    0) return 0 ;;
+    *) warn "Invalid choice." ;;
+  esac
 }
 
+# -----------------------------
+# Install / Update
+# -----------------------------
 install_update(){
   require_root
   detect_os
@@ -436,11 +468,12 @@ install_update(){
   ensure_dirs
 
   load_source
-  ok "Using TAR_URL: ${TAR_URL}"
 
-  if [[ ! -f "${ENV_FILE}" ]]; then
-    warn "Discord env not found. Please configure first."
+  if ! env_has_discord_keys; then
+    warn "Discord env not configured yet."
     prompt_secrets
+  else
+    ok "Env exists + keys OK: ${ENV_FILE}"
   fi
 
   install_node_via_nvm
@@ -448,116 +481,136 @@ install_update(){
   local tarfile stage
   tarfile="$(download_bundle_to_tmp "${TAR_URL}")"
   stage="$(extract_bundle "${tarfile}")"
-  deploy_from_stage "${stage}"
+  deploy_bundle "${stage}"
 
-  # CLI symlink: backend.py provides CLI interface
-  ln -sf "${BACKEND_DIR}/backend.py" "${CLI_BIN}"
-  chmod 755 "${CLI_BIN}"
-  chown root:root "${CLI_BIN}"
-  ok "CLI ready: ${CLI_BIN}"
+  # Ensure bot state dir ownership after rsync
+  mkdir -p "${BOT_DIR}/state"
+  chown -R "${BOT_USER}:${BOT_USER}" "${BOT_DIR}"
+  chmod 755 "${BOT_DIR}" "${BOT_DIR}/state"
 
-  install_bot_deps
+  npm_install_bot
+  install_cli_link
   write_systemd_units
-  restart_services
-  post_install_checks
 
-  # cleanup tar only (stage dir auto-cleaned by /tmp cleanup policy)
-  rm -f "${tarfile}" >/dev/null 2>&1 || true
+  # Start backend first so bot can connect
+  systemctl enable --now xray-backend.service
+
+  # Register commands BEFORE starting bot (so new commands appear immediately)
+  register_commands
+
+  systemctl enable --now xray-discord-bot.service
+  systemctl restart xray-discord-bot.service
+
+  info "Sanity checks:"
+  /usr/bin/python3 -c "import json; json.load(open('${XRAY_CONFIG}','r',encoding='utf-8')); print('JSON OK: ${XRAY_CONFIG}')"
+  "${CLI_BIN}" -h >/dev/null && ok "xray-userctl -h OK"
+
+  rm -f "${tarfile}" || true
   ok "Install/Update done."
 }
 
-reconfigure(){
+restart_services(){
   require_root
-  detect_os
-  ensure_bot_user
-
-  echo
-  echo "Reconfigure menu:"
-  echo "  1) Discord credentials (TOKEN/GUILD/ROLE/CLIENT)"
-  echo "  2) TAR_URL (release tar.gz source)"
-  echo "  3) Both"
-  echo -n "Choose [1-3]: "
-  read -r ch
-  case "$ch" in
-    1) prompt_secrets ;;
-    2) prompt_source ;;
-    3) prompt_secrets; prompt_source ;;
-    *) die "Invalid choice" ;;
-  esac
-
-  restart_services
-  ok "Reconfigure done."
+  info "Restarting services..."
+  systemctl restart xray-backend.service || true
+  systemctl restart xray-discord-bot.service || true
+  ok "Restart done."
 }
 
 status_logs(){
   require_root
   echo
-  echo "---- systemctl status ----"
+  info "===== STATUS ====="
   systemctl --no-pager --full status xray-backend.service || true
   echo
   systemctl --no-pager --full status xray-discord-bot.service || true
 
   echo
-  echo "---- last logs (journalctl) ----"
+  info "===== LOGS (last 120 lines) ====="
   echo "--- xray-backend.service ---"
   journalctl -u xray-backend.service -n 120 --no-pager || true
   echo
   echo "--- xray-discord-bot.service ---"
   journalctl -u xray-discord-bot.service -n 120 --no-pager || true
+
+  echo
+  info "Socket:"
+  if [[ -S "${SOCK_PATH}" ]]; then
+    ls -l "${SOCK_PATH}" || true
+  else
+    warn "Socket not found."
+  fi
 }
 
 uninstall_all(){
   require_root
-  info "Uninstalling bot/backend (will NOT touch /opt/quota/* or /opt/{vless,vmess,trojan,allproto}/*)..."
+  echo
+  warn "UNINSTALL will remove ONLY bot/backend deployment + services + env:"
+  echo " - ${BACKEND_DIR}"
+  echo " - ${BOT_DIR}"
+  echo " - ${ENV_DIR}"
+  echo " - ${CLI_BIN}"
+  echo " - systemd units: ${BACKEND_UNIT}, ${BOT_UNIT}"
+  echo " - services disable/stop"
+  echo " - user home nvm: ${BOT_HOME}/.nvm (optional remove)"
+  echo
+  warn "It will NOT delete:"
+  echo " - /opt/quota/*"
+  echo " - /opt/vless/* /opt/vmess/* /opt/trojan/* /opt/allproto/*"
+  echo
+  read -r -p "Type UNINSTALL to confirm: " c
+  [[ "${c}" == "UNINSTALL" ]] || { warn "Cancelled."; return 0; }
 
+  info "Stopping services..."
   systemctl stop xray-discord-bot.service 2>/dev/null || true
   systemctl stop xray-backend.service 2>/dev/null || true
   systemctl disable xray-discord-bot.service 2>/dev/null || true
   systemctl disable xray-backend.service 2>/dev/null || true
 
-  rm -f "${BOT_SERVICE_FILE}" "${BACKEND_SERVICE_FILE}" || true
+  info "Removing systemd unit files..."
+  rm -f "${BOT_UNIT}" "${BACKEND_UNIT}"
   systemctl daemon-reload || true
 
-  rm -f "${CLI_BIN}" || true
-  rm -rf "${BOT_DIR}" "${BACKEND_DIR}" || true
-  rm -rf "${ENV_DIR}" || true
+  info "Removing deployed files..."
+  rm -f "${CLI_BIN}"
+  rm -rf "${BACKEND_DIR}" "${BOT_DIR}" "${ENV_DIR}"
+  rm -f "${SOCK_PATH}" 2>/dev/null || true
 
-  if id "${BOT_USER}" >/dev/null 2>&1; then
-    userdel -r "${BOT_USER}" 2>/dev/null || true
-  fi
-  if getent group "${BOT_USER}" >/dev/null 2>&1; then
-    groupdel "${BOT_USER}" 2>/dev/null || true
-  fi
+  # Optional: remove bot user (kept by default for safety; comment out if you want)
+  # info "Removing bot user (and home)..."
+  # if id "${BOT_USER}" >/dev/null 2>&1; then
+  #   userdel -r "${BOT_USER}" 2>/dev/null || true
+  # fi
 
-  ok "Uninstall completed."
+  ok "Uninstall complete."
 }
 
 menu(){
+  require_root
   while true; do
-    echo
-    echo "=============================="
-    echo " XRAY DISCORD BOT INSTALLER"
-    echo "=============================="
-    echo "1) Install / Update (deploy + service + run)"
+    clear || true
+    echo "=================================================="
+    echo "          XRAY DISCORD BOT INSTALLER"
+    echo "=================================================="
+    echo "1) Install / Update (download release + deploy + register + run)"
     echo "2) Reconfigure (Discord creds / TAR_URL)"
     echo "3) Restart service"
     echo "4) Status (service + logs)"
     echo "5) Uninstall (remove bot/backend only)"
     echo "0) Exit"
-    echo "------------------------------"
-    echo -n "Choose: "
-    read -r opt
-
-    case "$opt" in
+    echo "--------------------------------------------------"
+    echo -n "Choose [0-5]: "
+    read -r choice || true
+    case "${choice:-}" in
       1) install_update; pause ;;
       2) reconfigure; pause ;;
       3) restart_services; pause ;;
       4) status_logs; pause ;;
       5) uninstall_all; pause ;;
       0) exit 0 ;;
-      *) warn "Invalid option"; pause ;;
+      *) warn "Invalid choice."; pause ;;
     esac
   done
 }
 
-menu
+menu "$@"
