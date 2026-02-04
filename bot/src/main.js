@@ -355,42 +355,23 @@ client.on("interactionCreate", async (interaction) => {
 
       const customId = String(interaction.customId || "");
 
-// accounts/del list filter + pagination buttons (from src/accounts.js)
-{
-  const mFilt = customId.match(/^filt:(acct|del):([a-z0-9_]+)$/i);
-  if (mFilt) {
-    const kind = (mFilt[1] || "acct").toLowerCase();
-    const proto = (mFilt[2] || "all").toLowerCase();
-    const payload = await buildListMessage(kind === "del" ? "del" : "acct", proto, 0);
-    return interaction.update({ content: null, embeds: payload.embeds, components: payload.components });
-  }
-
-  const mNav = customId.match(/^(acct|del):(prev|next):([a-z0-9_]+):(\d+)$/i);
-  if (mNav) {
-    const kind = (mNav[1] || "acct").toLowerCase();
-    const dir = (mNav[2] || "next").toLowerCase();
-    const proto = (mNav[3] || "all").toLowerCase();
-    const offset = parseInt(mNav[4], 10) || 0;
-
-    const step = Number.isFinite(Number(PAGE_SIZE)) ? Number(PAGE_SIZE) : 10;
-    const newOffset = dir === "prev" ? Math.max(0, offset - step) : (offset + step);
-
-    const payload = await buildListMessage(kind === "del" ? "del" : "acct", proto, newOffset);
-    return interaction.update({ content: null, embeds: payload.embeds, components: payload.components });
-  }
-}
-
       if (customId.startsWith("acct:sel:")) {
         const selected = (interaction.values && interaction.values[0]) ? String(interaction.values[0]) : "";
         const parsed = parseFinalEmail(selected);
         if (!parsed) return interaction.reply({ content: "❌ Invalid selection", ephemeral: true });
 
-        // Use local XRAY ACCOUNT DETAIL (.txt) path (avoid backend get_detail)
+        // Ask backend to get detail file path again
         await interaction.deferUpdate();
+        const resp = await callBackend({ action: "get_detail", protocol: parsed.proto, username: parsed.base });
 
-        const baseDir = (parsed.proto === "allproto") ? "/opt/allproto" : `/opt/${parsed.proto}`;
-        const txtPath = path.join(baseDir, `${parsed.final}.txt`);
-        if (!fs.existsSync(txtPath)) {
+        if (resp.status !== "ok") {
+          return interaction.followUp({ content: `❌ Failed: ${resp.error || "unknown error"}`, ephemeral: true });
+        }
+
+        const txtPath = resp && (resp.detail_path || resp.detail_txt)
+        ? String(resp.detail_path || resp.detail_txt)
+        : null;
+        if (!txtPath || !fs.existsSync(txtPath)) {
           return interaction.followUp({ content: `❌ File not found: ${txtPath}`, ephemeral: true });
         }
 
@@ -621,15 +602,6 @@ client.on("interactionCreate", async (interaction) => {
           return interaction.reply({ content: "❌ Unauthorized", ephemeral: true });
         }
 
-
-const mNav = customId.match(/^audit:(prev|next):(\d+)$/i);
-if (mNav) {
-  const dir = (mNav[1] || "next").toLowerCase();
-  const cur = parseInt(mNav[2], 10) || 0;
-  const page = dir === "prev" ? Math.max(0, cur - 1) : (cur + 1);
-  const panel = buildAuditPanel({ page });
-  return interaction.update({ ...panel });
-}
         if (customId === "audit:refresh") {
           const panel = buildAuditPanel();
           return interaction.update({ ...panel });
@@ -899,7 +871,7 @@ if (mNav) {
     return interaction.reply({ ...panel, ephemeral: true });
   }
 
-  if (cmd === "welcome") {
+  if (cmd === "welcome" || cmd === "wellcome") {
     const panel = buildWelcomePanel();
     return interaction.reply({ ...panel, ephemeral: true });
   }

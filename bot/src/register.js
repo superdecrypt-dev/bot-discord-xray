@@ -52,6 +52,23 @@ async function registerCommands() {
           .setRequired(false)
       ),
 
+    // NEW admin-only modules
+    new SlashCommandBuilder()
+      .setName("logs")
+      .setDescription("Panel logs service (xray/nginx/backend/bot) (admin only)"),
+
+    new SlashCommandBuilder()
+      .setName("renew")
+      .setDescription("Panel extend masa aktif akun (admin only)"),
+
+    new SlashCommandBuilder()
+      .setName("quota")
+      .setDescription("Panel set quota limit akun (admin only)"),
+
+    new SlashCommandBuilder()
+      .setName("block")
+      .setDescription("Panel block/unblock akun (admin only)"),
+
     // Admin-only (Discord server interaction)
     new SlashCommandBuilder()
       .setName("purge")
