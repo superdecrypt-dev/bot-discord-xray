@@ -93,16 +93,27 @@ async function auditLog(client, { actor, action, detail, guildId } = {}) {
   }
 }
 
-function buildAuditPanel({ extraRow } = {}) {
+
+function buildAuditPanel({ extraRow, page } = {}) {
   const enabled = auditCfg.enabled;
   const ch = auditCfg.channel_id ? `<#${auditCfg.channel_id}>` : "*(not set)*";
 
-  const preview = (auditCfg.last_events || []).slice(0, 5).map((ev, i) => {
+  const events = Array.isArray(auditCfg.last_events) ? auditCfg.last_events : [];
+  const pageSize = 5;
+  const totalPages = Math.max(1, Math.ceil(events.length / pageSize));
+  page = Number.isFinite(Number(page)) ? parseInt(String(page), 10) : 0;
+  if (page < 0) page = 0;
+  if (page > totalPages - 1) page = totalPages - 1;
+
+  const slice = events.slice(page * pageSize, page * pageSize + pageSize);
+  const preview = slice.map((ev, i) => {
     const ts = fmtDateTimeJakarta(ev.at || "-");
     const who = ev.actor_tag || "-";
     const act = ev.action || "-";
-    return `${i + 1}. \`${ts}\` **${who}** → \`${act}\``;
-  }).join("\n") || "*(no events)*";
+    const idx = (page * pageSize) + i + 1;
+    return `${idx}. \`${ts}\` **${who}** → \`${act}\``;
+  }).join("
+") || "*(no events)*";
 
   const e = new EmbedBuilder()
     .setTitle("🧾 Audit Panel")
@@ -111,7 +122,8 @@ function buildAuditPanel({ extraRow } = {}) {
       { name: "Enabled", value: enabled ? "✅ ON" : "❌ OFF", inline: true },
       { name: "Audit Channel", value: ch, inline: true },
       { name: "Last Events", value: preview.slice(0, 1024), inline: false },
-    );
+    )
+    .setFooter({ text: `Page ${page + 1}/${totalPages} | Total ${events.length}` });
 
   if (auditCfg.last_error) {
     e.addFields({ name: "Last Error", value: String(auditCfg.last_error).slice(0, 1024) });
@@ -124,7 +136,13 @@ function buildAuditPanel({ extraRow } = {}) {
     new ButtonBuilder().setCustomId("audit:refresh").setLabel("Refresh").setStyle(ButtonStyle.Secondary),
   );
 
-  const components = extraRow ? [row, extraRow] : [row];
+  const nav = new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId(`audit:prev:${page}`).setLabel("Prev").setStyle(ButtonStyle.Secondary).setEmoji("⬅️").setDisabled(page <= 0),
+    new ButtonBuilder().setCustomId(`audit:next:${page}`).setLabel("Next").setStyle(ButtonStyle.Secondary).setEmoji("➡️").setDisabled(page >= totalPages - 1),
+  );
+
+  const components = [row, nav];
+  if (extraRow) components.push(extraRow);
   return { content: null, embeds: [e], components };
 }
 
