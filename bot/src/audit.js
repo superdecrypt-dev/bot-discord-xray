@@ -93,7 +93,6 @@ async function auditLog(client, { actor, action, detail, guildId } = {}) {
   }
 }
 
-
 function buildAuditPanel({ extraRow, page } = {}) {
   const enabled = auditCfg.enabled;
   const ch = auditCfg.channel_id ? `<#${auditCfg.channel_id}>` : "*(not set)*";
@@ -106,14 +105,16 @@ function buildAuditPanel({ extraRow, page } = {}) {
   if (page > totalPages - 1) page = totalPages - 1;
 
   const slice = events.slice(page * pageSize, page * pageSize + pageSize);
-  const preview = slice.map((ev, i) => {
-    const ts = fmtDateTimeJakarta(ev.at || "-");
-    const who = ev.actor_tag || "-";
-    const act = ev.action || "-";
-    const idx = (page * pageSize) + i + 1;
-    return `${idx}. \`${ts}\` **${who}** → \`${act}\``;
-  }).join("
-") || "*(no events)*";
+  const preview = slice
+    .map((ev, i) => {
+      const ts = fmtDateTimeJakarta(ev.at || "-");
+      const who = ev.actor_tag || "-";
+      const act = ev.action || "-";
+      const idx = page * pageSize + i + 1;
+      return `${idx}. \`${ts}\` **${who}** → \`${act}\``;
+    })
+    // ✅ FIX: sebelumnya string literal pecah jadi newline (SyntaxError)
+    .join("\n") || "*(no events)*";
 
   const e = new EmbedBuilder()
     .setTitle("🧾 Audit Panel")
@@ -121,7 +122,7 @@ function buildAuditPanel({ extraRow, page } = {}) {
     .addFields(
       { name: "Enabled", value: enabled ? "✅ ON" : "❌ OFF", inline: true },
       { name: "Audit Channel", value: ch, inline: true },
-      { name: "Last Events", value: preview.slice(0, 1024), inline: false },
+      { name: "Last Events", value: preview.slice(0, 1024), inline: false }
     )
     .setFooter({ text: `Page ${page + 1}/${totalPages} | Total ${events.length}` });
 
@@ -130,15 +131,28 @@ function buildAuditPanel({ extraRow, page } = {}) {
   }
 
   const row = new ActionRowBuilder().addComponents(
-    new ButtonBuilder().setCustomId("audit:toggle").setLabel(enabled ? "Disable" : "Enable").setStyle(enabled ? ButtonStyle.Danger : ButtonStyle.Success),
+    new ButtonBuilder()
+      .setCustomId("audit:toggle")
+      .setLabel(enabled ? "Disable" : "Enable")
+      .setStyle(enabled ? ButtonStyle.Danger : ButtonStyle.Success),
     new ButtonBuilder().setCustomId("audit:set_channel").setLabel("Set Channel").setStyle(ButtonStyle.Primary),
     new ButtonBuilder().setCustomId("audit:test").setLabel("Test").setStyle(ButtonStyle.Secondary),
-    new ButtonBuilder().setCustomId("audit:refresh").setLabel("Refresh").setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId("audit:refresh").setLabel("Refresh").setStyle(ButtonStyle.Secondary)
   );
 
   const nav = new ActionRowBuilder().addComponents(
-    new ButtonBuilder().setCustomId(`audit:prev:${page}`).setLabel("Prev").setStyle(ButtonStyle.Secondary).setEmoji("⬅️").setDisabled(page <= 0),
-    new ButtonBuilder().setCustomId(`audit:next:${page}`).setLabel("Next").setStyle(ButtonStyle.Secondary).setEmoji("➡️").setDisabled(page >= totalPages - 1),
+    new ButtonBuilder()
+      .setCustomId(`audit:prev:${page}`)
+      .setLabel("Prev")
+      .setStyle(ButtonStyle.Secondary)
+      .setEmoji("⬅️")
+      .setDisabled(page <= 0),
+    new ButtonBuilder()
+      .setCustomId(`audit:next:${page}`)
+      .setLabel("Next")
+      .setStyle(ButtonStyle.Secondary)
+      .setEmoji("➡️")
+      .setDisabled(page >= totalPages - 1)
   );
 
   const components = [row, nav];

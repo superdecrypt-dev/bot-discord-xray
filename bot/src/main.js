@@ -36,6 +36,41 @@ const { buildChannelPanel, buildChannelSelectRow } = require("./channel");
 const { getAuditCfg, loadAuditCfg, saveAuditCfg, auditLog, buildAuditPanel, buildAuditChannelSelectRow } = require("./audit");
 const { getWelcomeCfg, loadWelcomeCfg, saveWelcomeCfg, sendWelcomeForMember, buildWelcomePanel, buildWelcomeChannelSelectRow, buildWelcomeTemplateModal } = require("./welcome");
 
+function safeRequire(modPath) {
+  try {
+    return require(modPath);
+  } catch (_) {
+    return null;
+  }
+}
+
+const logsMod = safeRequire("./logs");
+const renewMod = safeRequire("./renew");
+const quotaMod = safeRequire("./quota");
+const blockMod = safeRequire("./block");
+
+async function dispatchModule(mod, name, type, interaction) {
+  if (!mod) {
+    return interaction.reply({ content: `❌ Module '${name}' belum terpasang di server.`, ephemeral: true });
+  }
+
+  const candidates = {
+    slash: ["handleSlash", "handleCommand", "execute", "run"],
+    button: ["handleButton", "onButton", "executeButton", "handleInteraction", "execute"],
+    select: ["handleSelect", "onSelect", "executeSelect", "handleInteraction", "execute"],
+    modal: ["handleModal", "onModal", "executeModal", "handleInteraction", "execute"],
+  };
+
+  const list = candidates[type] || [];
+  for (const fn of list) {
+    if (typeof mod[fn] === "function") {
+      return await mod[fn](interaction);
+    }
+  }
+
+  return interaction.reply({ content: `❌ Module '${name}' tidak memiliki handler yang dikenali (${type}).`, ephemeral: true });
+}
+
 const { QUICK_REPLY_MS, PAGE_SIZE, ADD_PROTOCOLS, LIST_PROTOCOLS, GUILD_ID, ADMIN_ROLE_ID } = cfg;
 
 // Helpers from original
@@ -184,7 +219,37 @@ client.on("interactionCreate", async (interaction) => {
         return interaction.followUp({ content: "✅ Template welcome berhasil disimpan.", ephemeral: true });
       }
 
-      if (!cid.startsWith("addmodal:")) return;
+
+// extra module modals (renew/quota/block/logs)
+if (cid.startsWith("renew:")) {
+  if (!isAdmin(interaction.member, ADMIN_ROLE_ID)) {
+    return interaction.reply({ content: "❌ Unauthorized", ephemeral: true });
+  }
+  return await dispatchModule(renewMod, "renew", "modal", interaction);
+}
+
+if (cid.startsWith("quota:")) {
+  if (!isAdmin(interaction.member, ADMIN_ROLE_ID)) {
+    return interaction.reply({ content: "❌ Unauthorized", ephemeral: true });
+  }
+  return await dispatchModule(quotaMod, "quota", "modal", interaction);
+}
+
+if (cid.startsWith("block:")) {
+  if (!isAdmin(interaction.member, ADMIN_ROLE_ID)) {
+    return interaction.reply({ content: "❌ Unauthorized", ephemeral: true });
+  }
+  return await dispatchModule(blockMod, "block", "modal", interaction);
+}
+
+if (cid.startsWith("logs:")) {
+  if (!isAdmin(interaction.member, ADMIN_ROLE_ID)) {
+    return interaction.reply({ content: "❌ Unauthorized", ephemeral: true });
+  }
+  return await dispatchModule(logsMod, "logs", "modal", interaction);
+}
+
+if (!cid.startsWith("addmodal:")) return;
 
       if (!isAdmin(interaction.member, ADMIN_ROLE_ID)) {
         return interaction.reply({ content: "❌ Unauthorized", ephemeral: true });
@@ -355,6 +420,13 @@ client.on("interactionCreate", async (interaction) => {
 
       const customId = String(interaction.customId || "");
 
+
+// extra module selects
+if (customId.startsWith("logs:")) return await dispatchModule(logsMod, "logs", "select", interaction);
+if (customId.startsWith("renew:")) return await dispatchModule(renewMod, "renew", "select", interaction);
+if (customId.startsWith("quota:")) return await dispatchModule(quotaMod, "quota", "select", interaction);
+if (customId.startsWith("block:")) return await dispatchModule(blockMod, "block", "select", interaction);
+
       if (customId.startsWith("acct:sel:")) {
         const selected = (interaction.values && interaction.values[0]) ? String(interaction.values[0]) : "";
         const parsed = parseFinalEmail(selected);
@@ -439,7 +511,37 @@ client.on("interactionCreate", async (interaction) => {
         return interaction.update({ ...panel });
       }
 
-      // purge buttons
+
+// extra module buttons (logs/renew/quota/block)
+if (customId.startsWith("logs:")) {
+  if (!isAdmin(interaction.member, ADMIN_ROLE_ID)) {
+    return interaction.reply({ content: "❌ Unauthorized", ephemeral: true });
+  }
+  return await dispatchModule(logsMod, "logs", "button", interaction);
+}
+
+if (customId.startsWith("renew:") || customId.startsWith("filt:renew:")) {
+  if (!isAdmin(interaction.member, ADMIN_ROLE_ID)) {
+    return interaction.reply({ content: "❌ Unauthorized", ephemeral: true });
+  }
+  return await dispatchModule(renewMod, "renew", "button", interaction);
+}
+
+if (customId.startsWith("quota:") || customId.startsWith("filt:quota:")) {
+  if (!isAdmin(interaction.member, ADMIN_ROLE_ID)) {
+    return interaction.reply({ content: "❌ Unauthorized", ephemeral: true });
+  }
+  return await dispatchModule(quotaMod, "quota", "button", interaction);
+}
+
+if (customId.startsWith("block:") || customId.startsWith("filt:block:")) {
+  if (!isAdmin(interaction.member, ADMIN_ROLE_ID)) {
+    return interaction.reply({ content: "❌ Unauthorized", ephemeral: true });
+  }
+  return await dispatchModule(blockMod, "block", "button", interaction);
+}
+
+// purge buttons
       if (customId.startsWith("purge:")) {
         if (!isAdmin(interaction.member, ADMIN_ROLE_ID)) {
           return interaction.reply({ content: "❌ Unauthorized", ephemeral: true });
@@ -963,7 +1065,24 @@ client.on("interactionCreate", async (interaction) => {
     }
   }
 
-  return interaction.reply({ content: "❌ Unknown command", ephemeral: true });
+
+if (cmd === "logs") {
+  return dispatchModule(logsMod, "logs", "slash", interaction);
+}
+
+if (cmd === "renew") {
+  return dispatchModule(renewMod, "renew", "slash", interaction);
+}
+
+if (cmd === "quota") {
+  return dispatchModule(quotaMod, "quota", "slash", interaction);
+}
+
+if (cmd === "block") {
+  return dispatchModule(blockMod, "block", "slash", interaction);
+}
+
+return interaction.reply({ content: "❌ Unknown command", ephemeral: true });
 });
 
 client.login(cfg.TOKEN);
