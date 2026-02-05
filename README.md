@@ -13,8 +13,3 @@ jika sudah install script yang diatas selanjutnya install script dibawah ini, ba
 ```
 rm -rf install-xray-bot.sh && wget -O /root/install-xray-bot.sh https://raw.githubusercontent.com/superdecrypt-dev/bot-discord-xray/main/installer/install-xray-bot.sh && chmod +x install-xray-bot.sh && ./install-xray-bot.sh
 ```
-fitur saat ini yang berfungsi dengan baik
-- tambah user
-- hapus user
-  
-jika dirasa sudah stabil kedepannya akan ditambah lagi
