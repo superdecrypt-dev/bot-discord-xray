@@ -289,11 +289,13 @@ if (!cid.startsWith("addmodal:")) return;
 
       const file = new AttachmentBuilder(txtPath, { name: path.basename(txtPath) });
 
+      const protoVal = String(resp.protocol || v.protocol || "-");
+
       const embed = new EmbedBuilder()
         .setTitle("✅ Account Created")
         .addFields(
           { name: "Username", value: String(resp.username || "-"), inline: true },
-          { name: "Protocol", value: String(resp.protocol || "-"), inline: true },
+          { name: "Protocol", value: `- ${protoVal}`, inline: true },
           { name: "Expired", value: String(resp.expired_at || "-"), inline: true },
         )
         .setFooter({ text: "Attached: XRAY ACCOUNT DETAIL (.txt)" });

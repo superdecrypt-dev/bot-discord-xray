@@ -1,3 +1,4 @@
+
 const {
   EmbedBuilder,
   ActionRowBuilder,
@@ -16,6 +17,30 @@ const { clampInt } = require("./util");
 const { formatAccountsTable } = require("./tables");
 const { buildProtocolFilterRow } = require("./accounts");
 
+/* =========================
+   Helper (UI only)
+   ========================= */
+function bytesToGB(b) {
+  return (b / (1024 ** 3)).toFixed(2);
+}
+
+function quotaStatus(used, limit, blocked) {
+  if (blocked) return { emoji: "🔴", text: "BLOCKED", color: 0xff0000 };
+  if (limit > 0 && used / limit >= 0.8) return { emoji: "🟡", text: "NEAR LIMIT", color: 0xffcc00 };
+  return { emoji: "🟢", text: "OK", color: 0x00cc66 };
+}
+
+function progressBar(used, limit, size = 20) {
+  if (!limit || limit <= 0) return "Unlimited";
+  const ratio = Math.min(used / limit, 1);
+  const filled = Math.round(ratio * size);
+  const empty = size - filled;
+  return `${"█".repeat(filled)}${"░".repeat(empty)}  ${Math.round(ratio * 100)}%`;
+}
+
+/* =========================
+   Utils existing
+   ========================= */
 function _parseFinal(u) {
   const s = String(u || "");
   const i = s.lastIndexOf("@");
@@ -23,6 +48,9 @@ function _parseFinal(u) {
   return { base: s.slice(0, i), proto: s.slice(i + 1), final: s };
 }
 
+/* =========================
+   List quota + indicator
+   ========================= */
 async function buildQuotaList(protoFilter, offset) {
   protoFilter = String(protoFilter || "all").toLowerCase().trim();
   if (!LIST_PROTOCOLS.includes(protoFilter)) protoFilter = "all";
@@ -46,12 +74,28 @@ async function buildQuotaList(protoFilter, offset) {
   const total = Number.isFinite(resp.total) ? resp.total : items.length;
   const hasMore = !!resp.has_more;
 
+  let color = 0x00cc66;
+
+  const lines = items.map((it, idx) => {
+    const used = Number(it.used || 0);
+    const limit = Number(it.limit || 0);
+    const blocked = Boolean(it.blocked);
+    const st = quotaStatus(used, limit, blocked);
+    color = st.color;
+    return (
+      `${String(idx + 1).padEnd(3)} ${st.emoji} ` +
+      `${String(it.username || "-").padEnd(18)} ` +
+      `${progressBar(used, limit)}`
+    );
+  });
+
   const embed = new EmbedBuilder()
-    .setTitle("📦 Quota Manager")
+    .setTitle("📊 Quota Monitor")
     .setDescription(
-      "Pilih akun dari dropdown untuk set quota.\n\n" +
-        (items.length ? formatAccountsTable(items) : "_Tidak ada akun ditemukan._")
+      "Status quota realtime per user.\n\n" +
+      (lines.length ? "```\n" + lines.join("\n") + "\n```" : "_Tidak ada akun ditemukan._")
     )
+    .setColor(color)
     .setFooter({ text: `Filter: ${protoFilter} | Showing ${items.length} of ${total} | Offset ${offset}` });
 
   const filterRow = buildProtocolFilterRow("quota", protoFilter);
@@ -68,7 +112,12 @@ async function buildQuotaList(protoFilter, offset) {
       .setLabel("Next")
       .setStyle(ButtonStyle.Secondary)
       .setEmoji("➡️")
-      .setDisabled(!hasMore)
+      .setDisabled(!hasMore),
+    new ButtonBuilder()
+      .setCustomId(`quota:refresh:${protoFilter}:${offset}`)
+      .setLabel("Refresh")
+      .setStyle(ButtonStyle.Secondary)
+      .setEmoji("🔄")
   );
 
   const components = [filterRow, navRow];
@@ -90,6 +139,9 @@ async function buildQuotaList(protoFilter, offset) {
   return { embeds: [embed], components, ephemeral: true };
 }
 
+/* =========================
+   Panel set quota (existing)
+   ========================= */
 async function buildQuotaPanel(finalU, protoFilter, offset) {
   const p = _parseFinal(finalU);
   if (!p) {
@@ -127,6 +179,9 @@ async function buildQuotaPanel(finalU, protoFilter, offset) {
   return { embeds: [embed], components: [row1, row2], ephemeral: true };
 }
 
+/* =========================
+   Handlers (unchanged flow)
+   ========================= */
 async function handleSlash(interaction) {
   const msg = await buildQuotaList("all", 0);
   return interaction.reply(msg);
@@ -203,6 +258,13 @@ async function handleButton(interaction) {
     const offset = Number(parts[3] || "0") || 0;
     const nextOffset = kind === "prev" ? Math.max(0, offset - PAGE_SIZE) : offset + PAGE_SIZE;
     const msg = await buildQuotaList(protoFilter, nextOffset);
+    return interaction.update(msg);
+  }
+
+  if (kind === "refresh") {
+    const protoFilter = parts[2] || "all";
+    const offset = Number(parts[3] || "0") || 0;
+    const msg = await buildQuotaList(protoFilter, offset);
     return interaction.update(msg);
   }
 
