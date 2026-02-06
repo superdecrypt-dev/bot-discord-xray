@@ -3,7 +3,7 @@ import re
 import subprocess
 from datetime import date, timedelta, datetime
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 from uuid import uuid4
 
 from .constants import VALID_PROTO, USERNAME_RE, QUOTA_DIR, DETAIL_BASE
@@ -164,13 +164,21 @@ def _find_secret_in_config(cfg: Dict[str, Any], proto: str, final_u: str) -> str
     return ""
 
 
-def _find_blocked_rule(cfg: Dict[str, Any]) -> Dict[str, Any] | None:
+def _find_blocked_rule(cfg: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     routing = cfg.get("routing")
     if not isinstance(routing, dict):
         return None
     rules = routing.get("rules")
     if not isinstance(rules, list):
         return None
+
+    # prefer rule that is explicitly marked with dummy-block-user
+    for r in rules:
+        if not isinstance(r, dict):
+            continue
+        if r.get("outboundTag") == "blocked" and isinstance(r.get("user"), list):
+            if "dummy-block-user" in r.get("user"):
+                return r
 
     # prefer rule that already has "user": [...]
     for r in rules:
@@ -423,6 +431,7 @@ def handle_action(req: Dict[str, Any]) -> Dict[str, Any]:
         return {
             "status": "ok",
             "username": final_u,
+            "protocol": proto,
             "uuid": secret if proto != "trojan" else None,
             "password": secret if proto == "trojan" else None,
             "expired_at": expired_at,
@@ -554,18 +563,10 @@ def handle_action(req: Dict[str, Any]) -> Dict[str, Any]:
             if not email_exists(cfg, final_u):
                 return {"status": "error", "error": "user not found in config", "username": final_u}
 
-            secret = _extract_secret_from_detail_txt(_detail_txt_path(proto, final_u))
-
-            removed = 0
-            if proto == "allproto":
-                removed += remove_client(cfg, "vless", final_u)
-                removed += remove_client(cfg, "vmess", final_u)
-                removed += remove_client(cfg, "trojan", final_u)
-            else:
-                removed = remove_client(cfg, proto, final_u)
-
-            if removed == 0:
-                return {"status": "error", "error": "user not found", "username": final_u}
+            # get secret for bookkeeping (prefer config, fallback detail file)
+            secret = _find_secret_in_config(cfg, proto, final_u)
+            if not secret:
+                secret = _extract_secret_from_detail_txt(_detail_txt_path(proto, final_u))
 
             # ✅ add to routing blocked users (best-effort)
             note = None
@@ -588,8 +589,19 @@ def handle_action(req: Dict[str, Any]) -> Dict[str, Any]:
             return {"status": "error", "error": f"blocked record missing: {e}", "username": final_u}
 
         if email_exists(cfg, final_u):
+            # remove from routing blocked users (best-effort)
+            note = None
+            if not _blocked_rule_remove(cfg, final_u):
+                note = "blocked routing rule not found"
+
+            backup_path = save_config_with_backup(cfg)
+            restart_xray()
             _blocked_remove(final_u)
-            return {"status": "ok", "username": final_u, "blocked": False, "note": "already present in config"}
+
+            resp = {"status": "ok", "username": final_u, "blocked": False, "backup_path": backup_path}
+            if note:
+                resp["note"] = note
+            return resp
 
         if proto == "allproto":
             n1 = append_client(cfg, "vless", final_u, secret)

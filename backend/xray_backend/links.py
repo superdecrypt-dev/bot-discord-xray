@@ -3,6 +3,12 @@ import json
 from typing import Any, Dict, List
 from urllib.parse import quote
 
+
+def _vmess_b64(obj: Dict[str, Any]) -> str:
+    # Match common CLI behaviour: standard base64 with padding
+    raw = json.dumps(obj, separators=(",", ":")).encode("utf-8")
+    return base64.b64encode(raw).decode("ascii")
+
 def collect_inbounds(cfg: Dict[str, Any], proto: str):
     res = []
     inbounds = cfg.get("inbounds", [])
@@ -23,51 +29,22 @@ def build_links_for_vless(domain: str, email: str, uuid: str, items, public_port
     def add(label, link):
         links.append(f"{label:10}: {link}")
 
-    if not items:
-        add("WebSocket", f"vless://{uuid}@{domain}:{public_port}?security=tls&encryption=none&type=ws&path=%2F#" + quote(email))
-        return links
-
-    seen = set()
-    for _port, network, security, stream in items:
-        port = public_port
-        ws = stream.get("wsSettings", {}) if isinstance(stream.get("wsSettings"), dict) else {}
-        grpc = stream.get("grpcSettings", {}) if isinstance(stream.get("grpcSettings"), dict) else {}
-        http = stream.get("httpSettings", {}) if isinstance(stream.get("httpSettings"), dict) else {}
-
-        if network == "ws":
-            path_ = ws.get("path", "/")
-            key = ("ws", port, path_, security)
-            if key in seen: continue
-            seen.add(key)
-            add("WebSocket", f"vless://{uuid}@{domain}:{port}?security={security}&encryption=none&type=ws&path={quote(path_)}#" + quote(email))
-
-        elif network == "grpc":
-            sn = grpc.get("serviceName", "grpc")
-            key = ("grpc", port, sn, security)
-            if key in seen: continue
-            seen.add(key)
-            add("gRPC", f"vless://{uuid}@{domain}:{port}?security={security}&encryption=none&type=grpc&serviceName={quote(sn)}&mode=gun#" + quote(email))
-
-        elif network == "httpupgrade":
-            path_ = http.get("path", "/")
-            key = ("httpupgrade", port, path_, security)
-            if key in seen: continue
-            seen.add(key)
-            add("HTTPUpgrade", f"vless://{uuid}@{domain}:{port}?security={security}&encryption=none&type=httpupgrade&path={quote(path_)}#" + quote(email))
-
-        else:
-            key = ("tcp", port, security)
-            if key in seen: continue
-            seen.add(key)
-            add("TCP", f"vless://{uuid}@{domain}:{port}?security={security}&encryption=none&type=tcp#" + quote(email))
-
+    # Use public endpoints (nginx) for stability/consistency
+    port = public_port
+    add("WebSocket", f"vless://{uuid}@{domain}:{port}?security=tls&encryption=none&type=ws&path=%2Fvless-ws#" + quote(email))
+    add("HTTPUpgrade", f"vless://{uuid}@{domain}:{port}?security=tls&encryption=none&type=httpupgrade&path=%2Fvless-hu#" + quote(email))
+    add("gRPC", f"vless://{uuid}@{domain}:{port}?security=tls&encryption=none&type=grpc&serviceName=vless-grpc&mode=gun#" + quote(email))
     return links
 
 def build_links_for_trojan(domain: str, email: str, pwd: str, items, public_port: int):
     links: List[str] = []
     def add(label, link):
         links.append(f"{label:10}: {link}")
-    add("TLS", f"trojan://{pwd}@{domain}:{public_port}?security=tls&type=tcp#" + quote(email))
+    port = public_port
+    # Use public endpoints (nginx)
+    add("WebSocket", f"trojan://{pwd}@{domain}:{port}?security=tls&type=ws&path=%2Ftrojan-ws#" + quote(email))
+    add("HTTPUpgrade", f"trojan://{pwd}@{domain}:{port}?security=tls&type=httpupgrade&path=%2Ftrojan-hu#" + quote(email))
+    add("gRPC", f"trojan://{pwd}@{domain}:{port}?security=tls&type=grpc&serviceName=trojan-grpc&mode=gun#" + quote(email))
     return links
 
 def build_links_for_vmess(domain: str, email: str, uuid: str, items, public_port: int):
@@ -75,112 +52,57 @@ def build_links_for_vmess(domain: str, email: str, uuid: str, items, public_port
     def add(label, link):
         links.append(f"{label:10}: {link}")
 
-    if not items:
-        obj = {
-            "v": "2",
-            "ps": email,
-            "add": domain,
-            "port": str(public_port),
-            "id": uuid,
-            "aid": "0",
-            "net": "ws",
-            "type": "none",
-            "host": domain,
-            "path": "/",
-            "tls": "tls",
-        }
-        b64 = base64.urlsafe_b64encode(json.dumps(obj).encode("utf-8")).decode("ascii").rstrip("=")
-        add("WebSocket", f"vmess://{b64}")
-        return links
+    port = public_port
 
-    seen = set()
-    for _port, network, security, stream in items:
-        port = public_port
-        ws = stream.get("wsSettings", {}) if isinstance(stream.get("wsSettings"), dict) else {}
-        grpc = stream.get("grpcSettings", {}) if isinstance(stream.get("grpcSettings"), dict) else {}
-        http = stream.get("httpSettings", {}) if isinstance(stream.get("httpSettings"), dict) else {}
+    ws_obj = {
+        "v": "2",
+        "ps": email,
+        "add": domain,
+        "port": str(port),
+        "id": uuid,
+        "aid": "0",
+        "scy": "auto",
+        "net": "ws",
+        "type": "none",
+        "host": domain,
+        "path": "/vmess-ws",
+        "tls": "tls",
+        "sni": domain,
+    }
+    add("WebSocket", f"vmess://{_vmess_b64(ws_obj)}")
 
-        if network == "ws":
-            path_ = ws.get("path", "/")
-            key = ("ws", port, path_, security)
-            if key in seen: continue
-            seen.add(key)
-            obj = {
-                "v": "2",
-                "ps": email,
-                "add": domain,
-                "port": str(port),
-                "id": uuid,
-                "aid": "0",
-                "net": "ws",
-                "type": "none",
-                "host": domain,
-                "path": path_,
-                "tls": security,
-            }
-            b64 = base64.urlsafe_b64encode(json.dumps(obj).encode("utf-8")).decode("ascii").rstrip("=")
-            add("WebSocket", f"vmess://{b64}")
+    hu_obj = {
+        "v": "2",
+        "ps": email,
+        "add": domain,
+        "port": str(port),
+        "id": uuid,
+        "aid": "0",
+        "scy": "auto",
+        "net": "httpupgrade",
+        "type": "none",
+        "host": domain,
+        "path": "/vmess-hu",
+        "tls": "tls",
+        "sni": domain,
+    }
+    add("HTTPUpgrade", f"vmess://{_vmess_b64(hu_obj)}")
 
-        elif network == "grpc":
-            sn = grpc.get("serviceName", "grpc")
-            key = ("grpc", port, sn, security)
-            if key in seen: continue
-            seen.add(key)
-            obj = {
-                "v": "2",
-                "ps": email,
-                "add": domain,
-                "port": str(port),
-                "id": uuid,
-                "aid": "0",
-                "net": "grpc",
-                "type": "gun",
-                "host": domain,
-                "path": sn,
-                "tls": security,
-            }
-            b64 = base64.urlsafe_b64encode(json.dumps(obj).encode("utf-8")).decode("ascii").rstrip("=")
-            add("gRPC", f"vmess://{b64}")
-
-        elif network == "httpupgrade":
-            path_ = http.get("path", "/")
-            key = ("httpupgrade", port, path_, security)
-            if key in seen: continue
-            seen.add(key)
-            obj = {
-                "v": "2",
-                "ps": email,
-                "add": domain,
-                "port": str(port),
-                "id": uuid,
-                "aid": "0",
-                "net": "httpupgrade",
-                "type": "none",
-                "host": domain,
-                "path": path_,
-                "tls": security,
-            }
-            b64 = base64.urlsafe_b64encode(json.dumps(obj).encode("utf-8")).decode("ascii").rstrip("=")
-            add("HTTPUpgrade", f"vmess://{b64}")
-
-        else:
-            key = ("tcp", port, security)
-            if key in seen: continue
-            seen.add(key)
-            obj = {
-                "v": "2",
-                "ps": email,
-                "add": domain,
-                "port": str(port),
-                "id": uuid,
-                "aid": "0",
-                "net": "tcp",
-                "type": "none",
-                "host": domain,
-                "path": "",
-                "tls": security,
-            }
-            b64 = base64.urlsafe_b64encode(json.dumps(obj).encode("utf-8")).decode("ascii").rstrip("=")
-            add(network.upper(), f"vmess://{b64}")
+    grpc_obj = {
+        "v": "2",
+        "ps": email,
+        "add": domain,
+        "port": str(port),
+        "id": uuid,
+        "aid": "0",
+        "scy": "auto",
+        "net": "grpc",
+        "type": "none",
+        "host": domain,
+        "path": "vmess-grpc",
+        "tls": "tls",
+        "sni": domain,
+    }
+    add("gRPC", f"vmess://{_vmess_b64(grpc_obj)}")
 
     return links
